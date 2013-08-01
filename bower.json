@@ -1,0 +1,10 @@
+{
+  "name": "Placeholder.js-bower",
+  "version": "2.1.0",
+  "main": "Placeholders.js",
+  "ignore": [
+    "LICENSE",
+    "*.json",
+    "*.md"
+  ]
+}
