@@ -1,82 +1,3 @@
-/* 
- * The MIT License
- *
- * Copyright (c) 2012 James Allardice
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), 
- * to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, 
- * and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
- * THE SOFTWARE.
- */
-
-// Defines the global Placeholders object along with various utility methods
-(function (global) {
-
-    "use strict";
-
-    // Cross-browser DOM event binding
-    function addEventListener(elem, event, fn) {
-        if (elem.addEventListener) {
-            return elem.addEventListener(event, fn, false);
-        }
-        if (elem.attachEvent) {
-            return elem.attachEvent("on" + event, fn);
-        }
-    }
-
-    // Check whether an item is in an array (we don't use Array.prototype.indexOf so we don't clobber any existing polyfills - this is a really simple alternative)
-    function inArray(arr, item) {
-        var i, len;
-        for (i = 0, len = arr.length; i < len; i++) {
-            if (arr[i] === item) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Move the caret to the index position specified. Assumes that the element has focus
-    function moveCaret(elem, index) {
-        var range;
-        if (elem.createTextRange) {
-            range = elem.createTextRange();
-            range.move("character", index);
-            range.select();
-        } else if (elem.selectionStart) {
-            elem.focus();
-            elem.setSelectionRange(index, index);
-        }
-    }
-
-    // Attempt to change the type property of an input element
-    function changeType(elem, type) {
-        try {
-            elem.type = type;
-            return true;
-        } catch (e) {
-            // You can't change input type in IE8 and below
-            return false;
-        }
-    }
-
-    // Expose public methods
-    global.Placeholders = {
-        Utils: {
-            addEventListener: addEventListener,
-            inArray: inArray,
-            moveCaret: moveCaret,
-            changeType: changeType
-        }
-    };
-
-}(this));
-
 (function (global) {
 
     "use strict";
@@ -129,6 +50,7 @@
         ATTR_EVENTS_BOUND = "data-placeholder-bound",
         ATTR_OPTION_FOCUS = "data-placeholder-focus",
         ATTR_OPTION_LIVE = "data-placeholder-live",
+        ATTR_MAXLENGTH = "data-placeholder-maxlength",
 
         // Various other variables used throughout the rest of the script
         test = document.createElement("input"),
@@ -141,13 +63,34 @@
     // No-op (used in place of public methods when native support is detected)
     function noop() {}
 
+    // Avoid IE9 activeElement of death when an iframe is used.
+    // More info:
+    // http://bugs.jquery.com/ticket/13393
+    // https://github.com/jquery/jquery/commit/85fc5878b3c6af73f42d61eedf73013e7faae408
+    function safeActiveElement() {
+        try {
+            return document.activeElement;
+        } catch (err) {}
+    }
+
     // Hide the placeholder value on a single element. Returns true if the placeholder was hidden and false if it was not (because it wasn't visible in the first place)
-    function hidePlaceholder(elem) {
-        var type;
-        if (elem.value === elem.getAttribute(ATTR_CURRENT_VAL) && elem.getAttribute(ATTR_ACTIVE) === "true") {
-            elem.setAttribute(ATTR_ACTIVE, "false");
-            elem.value = "";
+    function hidePlaceholder(elem, keydownValue) {
+        var type,
+            maxLength,
+            valueChanged = (!!keydownValue && elem.value !== keydownValue),
+            isPlaceholderValue = (elem.value === elem.getAttribute(ATTR_CURRENT_VAL));
+
+        if ((valueChanged || isPlaceholderValue) && elem.getAttribute(ATTR_ACTIVE) === "true") {
+            elem.removeAttribute(ATTR_ACTIVE);
+            elem.value = elem.value.replace(elem.getAttribute(ATTR_CURRENT_VAL), "");
             elem.className = elem.className.replace(classNameRegExp, "");
+
+            // Restore the maxlength value
+            maxLength = elem.getAttribute(ATTR_MAXLENGTH);
+            if (parseInt(maxLength, 10) >= 0) { // Old FF returns -1 if attribute not set (see GH-56)
+                elem.setAttribute("maxLength", maxLength);
+                elem.removeAttribute(ATTR_MAXLENGTH);
+            }
 
             // If the polyfill has changed the type of the element we need to change it back
             type = elem.getAttribute(ATTR_INPUT_TYPE);
@@ -162,11 +105,19 @@
     // Show the placeholder value on a single element. Returns true if the placeholder was shown and false if it was not (because it was already visible)
     function showPlaceholder(elem) {
         var type,
+            maxLength,
             val = elem.getAttribute(ATTR_CURRENT_VAL);
         if (elem.value === "" && val) {
             elem.setAttribute(ATTR_ACTIVE, "true");
             elem.value = val;
             elem.className += " " + placeholderClassName;
+
+            // Store and remove the maxlength value
+            maxLength = elem.getAttribute(ATTR_MAXLENGTH);
+            if (!maxLength) {
+                elem.setAttribute(ATTR_MAXLENGTH, elem.maxLength);
+                elem.removeAttribute("maxLength");
+            }
 
             // If the type of element needs to change, change it (e.g. password inputs)
             type = elem.getAttribute(ATTR_INPUT_TYPE);
@@ -184,7 +135,7 @@
 
     function handleElem(node, callback) {
 
-        var handleInputs, handleTextareas, elem, len, i;
+        var handleInputsLength, handleTextareasLength, handleInputs, handleTextareas, elem, len, i;
 
         // Check if the passed in node is an input/textarea (in which case it can't have any affected descendants)
         if (node && node.getAttribute(ATTR_CURRENT_VAL)) {
@@ -195,9 +146,12 @@
             handleInputs = node ? node.getElementsByTagName("input") : inputs;
             handleTextareas = node ? node.getElementsByTagName("textarea") : textareas;
 
+            handleInputsLength = handleInputs ? handleInputs.length : 0;
+            handleTextareasLength = handleTextareas ? handleTextareas.length : 0;
+
             // Run the callback for each element
-            for (i = 0, len = handleInputs.length + handleTextareas.length; i < len; i++) {
-                elem = i < handleInputs.length ? handleInputs[i] : handleTextareas[i - handleInputs.length];
+            for (i = 0, len = handleInputsLength + handleTextareasLength; i < len; i++) {
+                elem = i < handleInputsLength ? handleInputs[i] : handleTextareas[i - handleInputsLength];
                 callback(elem);
             }
         }
@@ -256,21 +210,7 @@
     }
     function makeKeyupHandler(elem) {
         return function () {
-            var type;
-
-            if (elem.getAttribute(ATTR_ACTIVE) === "true" && elem.value !== keydownVal) {
-
-                // Remove the placeholder
-                elem.className = elem.className.replace(classNameRegExp, "");
-                elem.value = elem.value.replace(elem.getAttribute(ATTR_CURRENT_VAL), "");
-                elem.setAttribute(ATTR_ACTIVE, false);
-
-                // If the type of element needs to change, change it (e.g. password inputs)
-                type = elem.getAttribute(ATTR_INPUT_TYPE);
-                if (type) {
-                    elem.type = type;
-                }
-            }
+            hidePlaceholder(elem, keydownVal);
 
             // If the element is now empty we need to show the placeholder
             if (elem.value === "") {
@@ -281,7 +221,7 @@
     }
     function makeClickHandler(elem) {
         return function () {
-            if (elem === document.activeElement && elem.value === elem.getAttribute(ATTR_CURRENT_VAL) && elem.getAttribute(ATTR_ACTIVE) === "true") {
+            if (elem === safeActiveElement() && elem.value === elem.getAttribute(ATTR_CURRENT_VAL) && elem.getAttribute(ATTR_ACTIVE) === "true") {
                 Utils.moveCaret(elem, 0);
             }
         };
@@ -302,6 +242,11 @@
         // If the element is part of a form, make sure the placeholder string is not submitted as a value
         if (elem.form) {
             form = elem.form;
+
+            // If the type of the property is a string then we have a "form" attribute and need to get the real form
+            if (typeof form === "string") {
+                form = document.getElementById(form);
+            }
 
             // Set a flag on the form so we know it's been handled (forms can contain multiple inputs)
             if (!form.getAttribute(ATTR_FORM_HANDLED)) {
@@ -325,8 +270,10 @@
         elem.setAttribute(ATTR_EVENTS_BOUND, "true");
         elem.setAttribute(ATTR_CURRENT_VAL, placeholder);
 
-        // If the element doesn't have a value, set it to the placeholder string
-        showPlaceholder(elem);
+        // If the element doesn't have a value and is not focussed, set it to the placeholder string
+        if (hideOnInput || elem !== safeActiveElement()) {
+            showPlaceholder(elem);
+        }
     }
 
     Placeholders.nativeSupport = test.placeholder !== void 0;
@@ -409,6 +356,9 @@
                             elem.setAttribute(ATTR_CURRENT_VAL, placeholder);
                         }
                     }
+                } else if (elem.getAttribute(ATTR_ACTIVE)) {
+                    hidePlaceholder(elem);
+                    elem.removeAttribute(ATTR_CURRENT_VAL);
                 }
             }
 
@@ -418,6 +368,10 @@
             }
         }, 100);
     }
+
+    Utils.addEventListener(global, "beforeunload", function () {
+        Placeholders.disable();
+    });
 
     // Expose public methods
     Placeholders.disable = Placeholders.nativeSupport ? noop : disablePlaceholders;
